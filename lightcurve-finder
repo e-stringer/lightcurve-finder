@@ -1,0 +1,833 @@
+#!/usr/bin/env python
+import sys
+import os
+import math
+
+# import signal
+# import psutil
+
+from PyQt5.QtWidgets import (
+    QMainWindow, QWidget, QLabel, QComboBox, QLineEdit,
+    QPushButton, QFileDialog, QMessageBox,
+    QDialog, QCheckBox, QDialogButtonBox,
+    QVBoxLayout, QGridLayout
+)
+from PyQt5.QtCore import QTimer
+
+# from astropy.coordinates import Angle, SkyCoord
+# import astropy.units as u
+
+
+class MyApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Light Curve GUI")
+        self.data = None
+        self.i = 0
+
+        # --- Main widget ---
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        self.layout = QGridLayout()
+        self.central_widget.setLayout(self.layout)
+
+        # --- Survey dropdown ---
+        self.layout.addWidget(QLabel("Survey:"), 0, 0)
+        self.survey_combo = QComboBox()
+        self.survey_combo.addItems(["ZTF", "Gaia", "ASAS-SN", "TESS"])
+        self.survey_combo.currentTextChanged.connect(self.update_band_combo)
+        self.layout.addWidget(self.survey_combo, 0, 1)
+        
+        # --- Band dropdown ---
+        self.layout.addWidget(QLabel("Band:"), 0, 2)
+        self.band_combo = QComboBox()
+        self.layout.addWidget(self.band_combo, 0, 3)
+        
+        # Define bands
+        self.survey_bands = {
+            "ZTF": ["g", "r", "i"],
+            "Gaia": ["G", "BP", "RP"],
+            "ASAS-SN": ["g", "V"],
+            "TESS": ["TESS"]
+        }
+        
+        # Initialize band combo to match default survey
+        self.update_band_combo(self.survey_combo.currentText())
+
+        # --- RA, Dec, Radius ---
+        self.layout.addWidget(QLabel("RA"), 1, 0)
+        self.ra_edit = QLineEdit("1.9276")
+        self.layout.addWidget(self.ra_edit, 1, 1)
+        self.ra_edit.setFixedWidth(90)
+
+        self.layout.addWidget(QLabel("Dec"), 2, 0)
+        self.dec_edit = QLineEdit("48.0707")
+        self.layout.addWidget(self.dec_edit, 2, 1)
+        self.dec_edit.setFixedWidth(90)
+
+        self.layout.addWidget(QLabel("Radius (arcsec)"), 3, 0)
+        self.rad_edit = QLineEdit("1")
+        self.layout.addWidget(self.rad_edit, 3, 1)
+        self.rad_edit.setFixedWidth(90)
+
+        # --- LS params ---
+        self.lsmin_combo = QComboBox()
+        self.lsmin_combo.addItems(["Min Freq. (c/d)", 'Max Per. (days)', "Max Per. (hrs)", 'Max Per. (min)'])
+        self.layout.addWidget(self.lsmin_combo, 1, 2)
+        
+        self.lsmax_combo = QComboBox()
+        self.lsmax_combo.addItems(["Max Freq. (c/d)", "Min Per. (days)", 'Min Per. (hrs)', 'Min Per. (min)'])
+        self.layout.addWidget(self.lsmax_combo, 2, 2)
+        
+        # self.layout.addWidget(QLabel("Min Frequency"), 1, 2)
+        self.min_edit = QLineEdit("1")
+        self.layout.addWidget(self.min_edit, 1, 3)
+        self.min_edit.setFixedWidth(100)
+
+        # self.layout.addWidget(QLabel("Max Frequency"), 2, 2)
+        self.max_edit = QLineEdit("500")
+
+        self.layout.addWidget(self.max_edit, 2, 3)
+        self.max_edit.setFixedWidth(100)
+        
+        # Track previous units
+        self.previous_min_unit = self.lsmin_combo.currentText()
+        self.previous_max_unit = self.lsmax_combo.currentText()
+        
+        # Connect events
+        self.lsmin_combo.currentIndexChanged.connect(self.update_min_units)
+        self.lsmax_combo.currentIndexChanged.connect(self.update_max_units)
+
+        
+
+
+        self.layout.addWidget(QLabel("niters"), 3, 2)
+        self.niters_edit = QLineEdit("1e5")
+        self.layout.addWidget(self.niters_edit, 3, 3)
+        self.niters_edit.setFixedWidth(100)
+        
+        self.layout.addWidget(QLabel("nterms"), 5, 2)
+        self.nterms_edit = QLineEdit("2")
+        self.layout.addWidget(self.nterms_edit, 5, 3)
+        self.nterms_edit.setFixedWidth(100)
+        
+        # --- Plot params ---
+        self.layout.addWidget(QLabel("Plot alpha"), 5, 0)
+        self.alpha_edit = QLineEdit("0.2")
+        self.layout.addWidget(self.alpha_edit, 5, 1)
+        self.alpha_edit.setFixedWidth(90)
+
+        # --- Buttons ---
+        self.query_button = QPushButton("Query")
+        self.query_button.clicked.connect(self.query)
+        self.layout.addWidget(self.query_button, 6, 1)
+
+        self.ls_button = QPushButton("Lomb Scargle")
+        self.ls_button.clicked.connect(self.LS)
+        self.layout.addWidget(self.ls_button, 6, 2)
+
+        self.replot_button = QPushButton("Replot")
+        self.replot_button.clicked.connect(self.replot)
+        self.layout.addWidget(self.replot_button, 6, 3)
+
+        self.save_button = QPushButton("Save Data")
+        self.save_button.clicked.connect(self.save_dataframe)
+        self.layout.addWidget(self.save_button, 6, 0)
+
+    def query(self):
+        self.error_shown = False
+        try:
+            if self.i == 0:
+                self.i = 1
+                self.survey = self.survey_combo.currentText()
+                self.band = self.band_combo.currentText()
+                self.lsdata = False
+                self.alpha = float(self.alpha_edit.text())
+                RA, DEC= self.parse_ra(), self.parse_dec()
+                radius = float(self.rad_edit.text())
+                print(f'Querying {RA}, {DEC} in {self.survey}...')
+                if self.survey == "ZTF":
+                    # lcq = lightcurve.LCQuery.from_position(RA, DEC, radius, bandname=self.band)
+                    lcq = lightcurve.LCQuery.from_position(RA, DEC, radius)
+                    print('Query complete!')
+                    self.data = lcq.data
+                    if len(self.data) == 0:
+                        QMessageBox.warning(self, "Error", "No sources found at this location.")
+                        self.error_shown = True
+                        return
+                    print(self.data)
+                    filtercode = f"z{self.band}"
+                    print(filtercode)
+                    data = self.data[self.data['filtercode'] == filtercode]
+                    print(len(data))
+                    if data is not None:
+                        time = data['mjd']
+                        magnitude = data['mag']
+                        mag_err = data['magerr']
+                        # filters = data['filtercode']
+                        plt.errorbar(time, magnitude, yerr=mag_err, fmt='o', markersize=2, capsize=2, alpha = self.alpha, color = 'black')
+                        plt.gca().invert_yaxis()
+                        plt.xlabel("MJD")
+                        plt.ylabel("Magnitude")
+                        plt.title(self.survey +' '+ self.band)
+                        plt.show()
+        
+                if self.survey == "Gaia":
+                    coord = SkyCoord(ra=RA, dec=DEC, unit=(u.degree, u.degree))
+                    Gaia.MAIN_GAIA_TABLE = "gaiadr3.gaia_source"
+                    Gaia.ROW_LIMIT = -1
+                    job = Gaia.cone_search_async(coord, radius=radius*u.arcsec)
+                    result = job.get_results()        
+                    parallax = result['parallax'][0]
+                    distance_pc = (1/parallax)*1000
+                    avg_mag = result['phot_g_mean_mag'][0]
+                    self.avg_mag_abs = avg_mag - 5 * math.log10(distance_pc) + 5
+                    self.bp_rp = result['bp_rp'][0]
+                    # print(result.colnames)
+                    print(f'parallax = {parallax} mas')
+                    print(len(result))
+                    if len(result) == 0:
+                        QMessageBox.warning(self, "Error", "No sources found at this location.")
+                        self.error_shown = True
+                        return
+                    source_id = result['designation'][0]
+                    datalink = Gaia.load_data(ids=[source_id], retrieval_type='EPOCH_PHOTOMETRY')
+                    print('Query complete!')
+                    table_list = list(datalink.values())[0]
+                    votable_table = table_list[0]
+                    astropy_table = votable_table.to_table()
+                    self.data = astropy_table.to_pandas()
+                    for col in self.data.columns:
+                        print(col)
+                    if self.band == 'G':
+                        self.time = self.data['g_transit_time'] + 2455197.5 - 2400000.5
+                        self.magnitude = self.data['g_transit_mag']
+                        self.flux = self.data['g_transit_flux']
+                        self.flux_err = self.data['g_transit_flux_error']
+                    if self.band == 'BP':
+                        self.time = self.data['bp_obs_time'] + 2455197.5 - 2400000.5
+                        self.magnitude = self.data['bp_mag']
+                        self.flux = self.data['bp_flux']
+                        self.flux_err = self.data['bp_flux_error']
+                    if self.band == 'RP':
+                        self.time = self.data['rp_obs_time'] + 2455197.5 - 2400000.5
+                        self.magnitude = self.data['rp_mag']
+                        self.flux = self.data['rp_flux']
+                        self.flux_err = self.data['rp_flux_error']
+                    plt.scatter(self.time, self.magnitude, s=5, alpha = self.alpha, color = 'black')
+                    plt.gca().invert_yaxis()
+                    plt.xlabel("MJD")
+                    plt.ylabel("Magnitude")
+                    plt.title('Light Curve')
+                    plt.show()
+                    
+                    def resource_path(filename):
+                        """Return the absolute path to a resource, works for PyInstaller."""
+                        if getattr(sys, 'frozen', False):
+                            # Running in a PyInstaller bundle
+                            base_path = sys._MEIPASS
+                        else:
+                            # Running normally
+                            base_path = os.path.abspath(".")
+                        return os.path.join(base_path, filename)
+                    
+                    hr = pd.read_csv(resource_path('gaia_cmd_10e6.csv'))
+                    wd = pd.read_csv(resource_path('gaia_wd.csv'))
+                   
+                    wd[['#mg', 'bp_rp']] = wd.iloc[:, 0].str.split(';', expand=True)
+                    wd[['#mg', 'bp_rp']] = wd[['#mg', 'bp_rp']].astype(float)
+                    wd = wd[['#mg', 'bp_rp']]
+
+                    hr = hr[['bp_rp', '#mg']]
+
+                    self.combined = pd.concat([hr, wd], ignore_index=True)
+
+                    plt.figure()
+                    plt.scatter(self.combined["bp_rp"], self.combined["#mg"], s = 1, alpha = 0.1, color = 'black')
+                    plt.scatter(self.bp_rp, self.avg_mag_abs, marker='*')
+                    plt.xlabel('bp-rp')
+                    plt.ylabel('Abs Mag')
+                    plt.gca().invert_yaxis()  # common for HR diagrams
+                    plt.show()
+                    
+                if self.survey == "ASAS-SN":
+                    client = SkyPatrolClient()
+                    try:
+                        result = client.cone_search(
+                            ra_deg=RA,
+                            dec_deg=DEC,
+                            radius=radius,
+                            units='arcsec',
+                            catalog='master_list',
+                            download=True
+                        )
+                        print('Query complete!')
+                    except:
+                        QMessageBox.warning(self, "Error", "No sources found at this location.")
+                        self.error_shown = True
+                    print(type(result))
+                    print(result)
+                    assasn_id = result.stats().index[0]
+                    print(assasn_id)
+                    self.data = result[assasn_id].data
+                    self.data = self.data[self.data['mag_err'] < 99]
+                    if self.band == 'g':
+                        self.data = self.data[self.data['phot_filter'] == 'g']
+                    if self.band == 'V':
+                        self.data = self.data[self.data['phot_filter'] == 'V']
+                    print(type(self.data))
+                    if self.data is not None:
+                        self.time = self.data['jd'] - 2400000.5
+                        self.magnitude = self.data['mag']
+                        self.mag_err = self.data['mag_err']
+                        self.filters = self.data['phot_filter']
+                        plt.errorbar(self.time, self.magnitude, yerr=self.mag_err, fmt='o', markersize=2, capsize=2, alpha = self.alpha, color = 'black')
+                        plt.gca().invert_yaxis()
+                        plt.xlabel("MJD")
+                        plt.ylabel("Magnitude")
+                        plt.title(self.survey +' '+ self.band)
+                        plt.show()
+                            
+                            
+                if self.survey == "TESS":
+                    try:
+                        search = lk.search_lightcurve(f"{RA} {DEC}", radius=radius*u.arcsec)
+                        print('Query complete!')
+                        print(search)
+                        test = search.download_all()
+                    except:
+                        QMessageBox.warning(self, "Error", "No sources found at this location.")
+                        self.error_shown = True
+                    self.data = (
+                        pd.concat([lc.to_pandas().assign(source=i)
+                                   for i, lc in enumerate(test)],
+                                  ignore_index=False)
+                        .reset_index()                      # moves index → column named "index"
+                        .rename(columns={'time': 'TESS_BJD'})  # or whatever column name you want
+                    )
+                    print(self.data)
+                    if self.data is not None:
+                        self.time = self.data['TESS_BJD'] + 2457000 - 2400000.5
+                        self.magnitude = self.data['pdcsap_flux']
+                        self.mag_err = self.data['pdcsap_flux_err']
+                        plt.errorbar(self.time, self.magnitude, yerr=self.mag_err, fmt='o', markersize=2, capsize=2, alpha = self.alpha, color = 'black')
+                        # plt.gca().invert_yaxis()
+                        plt.xlabel("BMJD")
+                        plt.ylabel("pdcsap flux")
+                        plt.title(self.survey)
+                        plt.show()
+                        
+        except:
+            self.i = 0
+            if self.error_shown == False:
+                QMessageBox.warning(self, "Error", "Query failed")
+            print('query failed')
+        QTimer.singleShot(3000, lambda: setattr(self, 'i', 0))
+
+            
+
+
+    def LS(self):
+        self.error_shown = False
+        try:
+            if self.i == 0:
+                self.i = 1
+                if self.data is None:
+                    QMessageBox.warning(self, "Error", "No data to analyze")
+                    self.error_shown = True
+                    self.i = 0
+                    return
+                
+                min_val = float(self.min_edit.text())
+                max_val = float(self.max_edit.text())
+                min_label = self.lsmin_combo.currentText()
+                max_label = self.lsmax_combo.currentText()
+                freq_start = self.to_freq(min_val, min_label)
+                freq_end = self.to_freq(max_val, max_label)
+                niters = int(eval(self.niters_edit.text(), {"__builtins__": None}, {}))
+                self.lsdata = True
+                self.alpha = float(self.alpha_edit.text())
+                self.nterms = int(self.nterms_edit.text())
+                lsalpha = self.alpha/2
+        
+                if self.survey in ['ZTF','ASAS-SN']:
+                    self.unique_filters = self.filters.unique()
+                    for filt in self.unique_filters:
+                        mask = self.filters == filt
+                        t = self.time[mask]
+                        y = self.magnitude[mask]
+                        self.yerr = self.mag_err[mask]
+                        valid = (~np.isnan(t)) & (~np.isnan(y)) & (~np.isnan(self.yerr))
+                        t, y, self.yerr = t[valid], y[valid], self.yerr[valid]
+                        if len(t) < 5:
+                            continue
+                        self.frequency = np.linspace(freq_start, freq_end, niters)
+                        ls = LombScargle(t, y, self.yerr, nterms=self.nterms)
+                        self.power = ls.power(self.frequency)
+                        best_idx = np.argmax(self.power)
+                        self.best_freq = self.frequency[best_idx]
+                        self.best_period = 1 / self.best_freq
+                        phase = (t % self.best_period) / self.best_period
+                        self.phase_two_cycles = np.concatenate([phase, phase+1])
+                        self.mag_two_cycles = np.concatenate([y, y])
+            
+                        fig, axs = plt.subplots(1, 2, figsize=(12, 4), gridspec_kw={'width_ratios': [2, 3]})
+                        if min_label == 'Min Freq. (c/d)':
+                            fig.suptitle(f'Filter: {self.band} | Best Freq: {self.best_freq:.5f} cycles/day')
+                            axs[0].plot(self.frequency, self.power, color='black')
+                            axs[0].set_xlabel('Frequency (cycles/day)')
+                        if min_label == 'Max Per. (min)':
+                            fig.suptitle(f'Filter: {self.band} | Best Period: {self.best_period*24*60:.5f} min')
+                            axs[0].plot((24*60)/self.frequency, self.power, color='black')
+                            axs[0].set_xlabel('Period (minutes)')
+                        if min_label == 'Max Per. (hrs)':
+                            fig.suptitle(f'Filter: {self.band} | Best Period: {self.best_period*24:.5f} hours')
+                            axs[0].plot(24/self.frequency, self.power, color='black')
+                            axs[0].set_xlabel('Period (hours)')
+                        if min_label == 'Max Per. (days)':
+                            fig.suptitle(f'Filter: {self.band} | Best Period: {self.best_period:.5f} days')
+                            axs[0].plot(1/self.frequency, self.power, color='black')
+                            axs[0].set_xlabel('Period (days)')
+                            
+                        axs[0].set_ylabel('LS Power')
+                        axs[0].set_title('Lomb-Scargle Periodogram')
+                        axs[1].errorbar(self.phase_two_cycles, self.mag_two_cycles, yerr=np.concatenate([self.yerr, self.yerr]),
+                                        fmt='o', markersize=2, capsize=2, color='black', alpha=lsalpha)
+                        axs[1].invert_yaxis()
+                        axs[1].set_xlabel("Phase")
+                        axs[1].set_ylabel("Magnitude")
+                        axs[1].set_title("Phase-folded Light Curve (2 cycles)")
+                        axs[1].set_xlim(0, 2)
+                        plt.tight_layout()
+                        plt.show()
+                else:
+                    t = self.time
+                    if self.survey == 'Gaia':
+                        y = self.flux
+                        self.yerr = self.flux_err
+                    else:
+                        y = self.magnitude
+                        self.yerr = self.mag_err
+                    valid = (~np.isnan(t)) & (~np.isnan(y)) & (~np.isnan(self.yerr))
+                    t, y, self.yerr = t[valid], y[valid], self.yerr[valid]
+                    self.frequency = np.linspace(freq_start, freq_end, niters)
+                    ls = LombScargle(t, y, self.yerr, nterms=self.nterms)
+                    self.power = ls.power(self.frequency)
+                    best_idx = np.argmax(self.power)
+                    self.best_freq = self.frequency[best_idx]
+                    self.best_period = 1 / self.best_freq
+                    phase = (t % self.best_period) / self.best_period
+                    self.phase_two_cycles = np.concatenate([phase, phase+1])
+                    self.mag_two_cycles = np.concatenate([y, y])
+        
+                    fig, axs = plt.subplots(1, 2, figsize=(12, 4), gridspec_kw={'width_ratios': [2, 3]})
+                    if min_label == 'Min Freq. (c/d)':
+                        fig.suptitle(f'Filter: {self.band} | Best Freq: {self.best_freq:.5f} cycles/day')
+                        axs[0].plot(self.frequency, self.power, color='black')
+                        axs[0].set_xlabel('Frequency (cycles/day)')
+                    if min_label == 'Max Per. (min)':
+                        fig.suptitle(f'Filter: {self.band} | Best Period: {self.best_period*24*60:.5f} min')
+                        axs[0].plot((24*60)/self.frequency, self.power, color='black')
+                        axs[0].set_xlabel('Period (minutes)')
+                    if min_label == 'Max Per. (hrs)':
+                        fig.suptitle(f'Filter: {self.band} | Best Period: {self.best_period*24:.5f} hours')
+                        axs[0].plot(24/self.frequency, self.power, color='black')
+                        axs[0].set_xlabel('Period (hours)')
+                    if min_label == 'Max Per. (days)':
+                        fig.suptitle(f'Filter: {self.band} | Best Period: {self.best_period:.5f} days')
+                        axs[0].plot(1/self.frequency, self.power, color='black')
+                        axs[0].set_xlabel('Period (days)')
+                    axs[0].set_ylabel('LS Power')
+                    axs[0].set_title('Lomb-Scargle Periodogram')
+                    axs[1].errorbar(self.phase_two_cycles, self.mag_two_cycles, yerr=np.concatenate([self.yerr, self.yerr]),
+                                    fmt='o', markersize=2, capsize=2, color='black', alpha=lsalpha)
+                    axs[1].set_xlabel("Phase")
+                    axs[1].set_ylabel("Flux")
+                    axs[1].set_title("Phase-folded Light Curve (2 cycles)")
+                    axs[1].set_xlim(0, 2)
+                    plt.tight_layout()
+                    plt.show()
+        except:
+            self.i = 0
+            self.lsdata = False
+            if self.error_shown == False:
+                QMessageBox.warning(self, "Error", "Lomb Scargle failed")
+            print('Lomb Scargle failed')
+        QTimer.singleShot(3000, lambda: setattr(self, 'i', 0))
+
+    def replot(self):
+        if self.i == 0:
+            self.i = 1
+            self.alpha = float(self.alpha_edit.text())
+            lsalpha = self.alpha/2
+            min_label = self.lsmin_combo.currentText()
+            self.band = self.band_combo.currentText()
+            if self.survey == 'ZTF':
+                filtercode = f"z{self.band}"
+                print(filtercode)
+                data = self.data[self.data['filtercode'] == filtercode]
+                print(len(data))
+                if data is not None:
+                    time = data['mjd']
+                    magnitude = data['mag']
+                    mag_err = data['magerr']
+                    plt.errorbar(time, magnitude, yerr=mag_err, fmt='o', markersize=2, capsize=2, alpha=self.alpha, color='black')
+                    plt.gca().invert_yaxis()
+                    plt.xlabel('MJD')
+                    plt.ylabel('Magnitude')
+                    plt.title(self.survey +' '+ self.band)
+                    plt.show()
+                    if hasattr(self, "unique_filters") and self.unique_filters and self.lsdata == True:
+                        for filt in self.unique_filters:
+                            fig, axs = plt.subplots(1, 2, figsize=(12, 4), gridspec_kw={'width_ratios': [2, 3]})
+                            if min_label == 'Min Freq. (c/d)':
+                                fig.suptitle(f'Filter: {self.band} | Best Freq: {self.best_freq:.5f} cycles/day')
+                                axs[0].plot(self.frequency, self.power, color='black')
+                                axs[0].set_xlabel('Frequency (cycles/day)')
+                            if min_label == 'Max Per. (min)':
+                                fig.suptitle(f'Filter: {self.band} | Best Period: {self.best_period*24*60:.5f} min')
+                                axs[0].plot((24*60)/self.frequency, self.power, color='black')
+                                axs[0].set_xlabel('Period (minutes)')
+                            if min_label == 'Max Per. (hrs)':
+                                fig.suptitle(f'Filter: {self.band} | Best Period: {self.best_period*24:.5f} hours')
+                                axs[0].plot(24/self.frequency, self.power, color='black')
+                                axs[0].set_xlabel('Period (hours)')
+                            if min_label == 'Max Per. (days)':
+                                fig.suptitle(f'Filter: {self.band} | Best Period: {self.best_period:.5f} days')
+                                axs[0].plot(1/self.frequency, self.power, color='black')
+                                axs[0].set_xlabel('Period (days)')
+                            axs[0].set_ylabel('LS Power')
+                            axs[0].set_title('Lomb-Scargle Periodogram')
+                            axs[0].legend()
+                            axs[1].errorbar(self.phase_two_cycles, self.mag_two_cycles, yerr=np.concatenate([self.yerr, self.yerr]),
+                                            fmt='o', markersize=2, capsize=2, color='black', alpha=lsalpha)
+                            axs[1].invert_yaxis()
+                            axs[1].set_xlabel('Phase')
+                            axs[1].set_ylabel('Magnitude')
+                            axs[1].set_title('Phase-folded Light Curve (2 cycles)')
+                            axs[1].set_xlim(0, 2)
+                            plt.tight_layout()
+                            plt.show()
+                
+            if self.survey == "Gaia":
+                if self.data is not None:
+                    if self.band == 'G':
+                        time = self.data['g_transit_time'] + 2455197.5 - 2400000.5
+                        magnitude = self.data['g_transit_mag']
+                    if self.band == 'BP':
+                        time = self.data['bp_obs_time'] + 2455197.5 - 2400000.5
+                        magnitude = self.data['bp_mag']
+                    if self.band == 'RP':
+                        time = self.data['rp_obs_time'] + 2455197.5 - 2400000.5
+                        magnitude = self.data['rp_mag']
+                    plt.scatter(time, magnitude, alpha=self.alpha, s=5, color='black')
+                    plt.gca().invert_yaxis()
+                    plt.xlabel("MJD")
+                    plt.ylabel("Magnitude")
+                    plt.title(self.survey +' '+ self.band)
+                    plt.show()
+                    
+                    plt.figure()
+                    plt.scatter(self.combined["bp_rp"], self.combined["#mg"], s = 1, alpha = 0.1, color = 'black')
+                    plt.scatter(self.bp_rp, self.avg_mag_abs, marker='*')
+                    plt.xlabel('bp-rp')
+                    plt.ylabel('Abs Mag')
+                    plt.gca().invert_yaxis()  # common for HR diagrams
+                    plt.show()
+                        
+                    if self.lsdata == True:
+                        fig, axs = plt.subplots(1, 2, figsize=(12, 4), gridspec_kw={'width_ratios': [2, 3]})
+                        if min_label == 'Min Freq. (c/d)':
+                            fig.suptitle(f'Filter: {self.band} | Best Freq: {self.best_freq:.5f} cycles/day')
+                            axs[0].plot(self.frequency, self.power, color='black')
+                            axs[0].set_xlabel('Frequency (cycles/day)')
+                        if min_label == 'Max Per. (min)':
+                            fig.suptitle(f'Filter: {self.band} | Best Period: {self.best_period*24*60:.5f} min')
+                            axs[0].plot((24*60)/self.frequency, self.power, color='black')
+                            axs[0].set_xlabel('Period (minutes)')
+                        if min_label == 'Max Per. (hrs)':
+                            fig.suptitle(f'Filter: {self.band} | Best Period: {self.best_period*24:.5f} hours')
+                            axs[0].plot(24/self.frequency, self.power, color='black')
+                            axs[0].set_xlabel('Period (hours)')
+                        if min_label == 'Max Per. (days)':
+                            fig.suptitle(f'Filter: {self.band} | Best Period: {self.best_period:.5f} days')
+                            axs[0].plot(1/self.frequency, self.power, color='black')
+                            axs[0].set_xlabel('Period (days)')
+                        axs[0].set_ylabel('LS Power')
+                        axs[0].set_title('Lomb-Scargle Periodogram')
+                        axs[1].errorbar(self.phase_two_cycles, self.mag_two_cycles, yerr=np.concatenate([self.yerr, self.yerr]),
+                                        fmt='o', markersize=2, capsize=2, color='black', alpha=lsalpha)
+                        # axs[1].invert_yaxis()
+                        axs[1].set_xlabel("Phase")
+                        axs[1].set_ylabel("Flux")
+                        axs[1].set_title("Phase-folded Light Curve (2 cycles)")
+                        axs[1].set_xlim(0, 2)
+                        plt.tight_layout()
+                        plt.show()
+                    
+            if self.survey == "ASAS-SN":
+                if self.data is not None:
+                    self.time = self.data['jd'] - 2400000.5
+                    self.magnitude = self.data['mag']
+                    self.mag_err = self.data['mag_err']
+                    self.filters = self.data['phot_filter']
+                    plt.errorbar(self.time, self.magnitude, yerr=self.mag_err, fmt='o', markersize=2, capsize=2, alpha = self.alpha, color='black')
+                    plt.gca().invert_yaxis()
+                    plt.xlabel("MJD")
+                    plt.ylabel("Magnitude")
+                    plt.title(self.survey +' '+ self.band)
+                    plt.show()
+                    if hasattr(self, "unique_filters") and self.unique_filters and self.lsdata == True:
+                        for filt in self.unique_filters:
+                            fig, axs = plt.subplots(1, 2, figsize=(12, 4), gridspec_kw={'width_ratios': [2, 3]})
+                            if min_label == 'Min Freq. (c/d)':
+                                fig.suptitle(f'Filter: {self.band} | Best Freq: {self.best_freq:.5f} cycles/day')
+                                axs[0].plot(self.frequency, self.power, color='black')
+                                axs[0].set_xlabel('Frequency (cycles/day)')
+                            if min_label == 'Max Per. (min)':
+                                fig.suptitle(f'Filter: {self.band} | Best Period: {self.best_period*24*60:.5f} min')
+                                axs[0].plot((24*60)/self.frequency, self.power, color='black')
+                                axs[0].set_xlabel('Period (minutes)')
+                            if min_label == 'Max Per. (hrs)':
+                                fig.suptitle(f'Filter: {self.band} | Best Period: {self.best_period*24:.5f} hours')
+                                axs[0].plot(24/self.frequency, self.power, color='black')
+                                axs[0].set_xlabel('Period (hours)')
+                            if min_label == 'Max Per. (days)':
+                                fig.suptitle(f'Filter: {self.band} | Best Period: {self.best_period:.5f} days')
+                                axs[0].plot(1/self.frequency, self.power, color='black')
+                                axs[0].set_xlabel('Period (days)')
+                            axs[0].set_ylabel('LS Power')
+                            axs[0].set_title('Lomb-Scargle Periodogram')
+                            axs[0].legend()
+                            axs[1].errorbar(self.phase_two_cycles, self.mag_two_cycles, yerr=np.concatenate([self.yerr, self.yerr]),
+                                            fmt='o', markersize=2, capsize=2, color='black', alpha=lsalpha)
+                            axs[1].invert_yaxis()
+                            axs[1].set_xlabel('Phase')
+                            axs[1].set_ylabel('Magnitude')
+                            axs[1].set_title('Phase-folded Light Curve (2 cycles)')
+                            axs[1].set_xlim(0, 2)
+                            plt.tight_layout()
+                            plt.show()
+                            
+                            
+                            
+            if self.survey == "TESS":
+                if self.data is not None:
+                    self.time = self.data['TESS_BJD'] + 2457000 - 2400000.5
+                    self.magnitude = self.data['pdcsap_flux']
+                    self.mag_err = self.data['pdcsap_flux_err']
+                    plt.errorbar(self.time, self.magnitude, yerr=self.mag_err, fmt='o', markersize=2, capsize=2, alpha=self.alpha, color = 'black')
+                    # plt.gca().invert_yaxis()
+                    plt.xlabel("BMJD")
+                    plt.ylabel("pdcsap flux")
+                    plt.title(self.survey)
+                    plt.show()
+                    
+                    if self.lsdata == True:
+                        fig, axs = plt.subplots(1, 2, figsize=(12, 4), gridspec_kw={'width_ratios': [2, 3]})
+                        
+                        if min_label == 'Min Freq. (c/d)':
+                            fig.suptitle(f'Filter: {self.band} | Best Freq: {self.best_freq:.5f} cycles/day')
+                            axs[0].plot(self.frequency, self.power, color='black')
+                            axs[0].set_xlabel('Frequency (cycles/day)')
+                        if min_label == 'Max Per. (min)':
+                            fig.suptitle(f'Filter: {self.band} | Best Period: {self.best_period*24*60:.5f} min')
+                            axs[0].plot((24*60)/self.frequency, self.power, color='black')
+                            axs[0].set_xlabel('Period (minutes)')
+                        if min_label == 'Max Per. (hrs)':
+                            fig.suptitle(f'Filter: {self.band} | Best Period: {self.best_period*24:.5f} hours')
+                            axs[0].plot(24/self.frequency, self.power, color='black')
+                            axs[0].set_xlabel('Period (hours)')
+                        if min_label == 'Max Per. (days)':
+                            fig.suptitle(f'Filter: {self.band} | Best Period: {self.best_period:.5f} days')
+                            axs[0].plot(1/self.frequency, self.power, color='black')
+                            axs[0].set_xlabel('Period (days)')
+                        axs[0].set_ylabel('LS Power')
+                        axs[0].set_title('Lomb-Scargle Periodogram')
+                        axs[1].errorbar(self.phase_two_cycles, self.mag_two_cycles, yerr=np.concatenate([self.yerr, self.yerr]),
+                                        fmt='o', markersize=2, capsize=2, color='black', alpha=lsalpha)
+                        # axs[1].invert_yaxis()
+                        axs[1].set_xlabel("Phase")
+                        axs[1].set_ylabel("Flux")
+                        axs[1].set_title("Phase-folded Light Curve (2 cycles)")
+                        axs[1].set_xlim(0, 2)
+                        plt.tight_layout()
+                        plt.show()
+
+            QTimer.singleShot(5000, lambda: setattr(self, 'i', 0))
+
+
+
+    def save_dataframe(self):
+        if self.i == 0:
+            self.i = 1
+            if self.data is None:
+                QMessageBox.warning(self, "Error", "No data to save!")
+                self.i = 0
+                return
+        
+            # --- Dialog to select columns ---
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Select columns to save")
+            layout = QVBoxLayout(dialog)
+        
+            # Create a checkbox for each column
+            checkboxes = []
+            for col in self.data.columns:
+                cb = QCheckBox(col)
+                cb.setChecked(False)  # default: all selected
+                layout.addWidget(cb)
+                checkboxes.append(cb)
+        
+            # OK / Cancel buttons
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            layout.addWidget(buttons)
+            buttons.accepted.connect(dialog.accept)
+            buttons.rejected.connect(dialog.reject)
+        
+            if dialog.exec_() == QDialog.Accepted:
+                # Collect selected columns
+                selected_cols = [cb.text() for cb in checkboxes if cb.isChecked()]
+                if not selected_cols:
+                    QMessageBox.warning(self, "Error", "No columns selected!")
+                    return
+        
+                # Ask for file path
+                options = QFileDialog.Options()
+                file_path, _ = QFileDialog.getSaveFileName(self, "Save CSV", "output.csv",
+                                                           "CSV Files (*.csv);;All Files (*)",
+                                                           options=options)
+                if file_path:
+                    # Save only selected columns
+                    self.data[selected_cols].to_csv(file_path, index=False)
+                    QMessageBox.information(self, "Saved", f"Data saved to {file_path}")
+                    
+            QTimer.singleShot(3000, lambda: setattr(self, 'i', 0))
+
+            
+            
+    def update_band_combo(self, survey):
+        self.band_combo.clear()  # remove previous items
+        self.band_combo.addItems(self.survey_bands[survey])
+        
+    
+    # Convert a value in the UI into frequency (cycles/day)
+    def to_freq(self, value, unit_label):
+        if "Freq" in unit_label:  # already cycles/day
+            return value
+        if "min" in unit_label:
+            return 1440.0 / value
+        if "hrs" in unit_label:
+            return 24.0 / value
+        if "days" in unit_label:
+            return 1.0 / value
+        return value
+
+    # Convert frequency (cycles/day) → selected UI unit
+    def from_freq(self, freq, unit_label):
+        if "Freq." in unit_label:  
+            return freq
+        if "min" in unit_label:
+            return 1440.0 / freq
+        if "hrs" in unit_label:
+            return 24.0 / freq
+        if "days" in unit_label:
+            return 1.0 / freq
+        return freq
+    
+    def update_min_units(self):
+        old_units = self.previous_min_unit
+        new_units = self.lsmin_combo.currentText()
+    
+        try:
+            val = float(self.min_edit.text())
+        except ValueError:
+            return
+    
+        # Convert old → freq → new
+        freq = self.to_freq(val, old_units)
+        new_val = self.from_freq(freq, new_units)
+    
+        self.min_edit.setText(f"{new_val:.6f}".rstrip('0').rstrip('.'))
+        self.previous_min_unit = new_units
+        
+    def update_max_units(self):
+        old_units = self.previous_max_unit
+        new_units = self.lsmax_combo.currentText()
+    
+        try:
+            val = float(self.max_edit.text())
+        except ValueError:
+            return
+    
+        freq = self.to_freq(val, old_units)
+        new_val = self.from_freq(freq, new_units)
+    
+        self.max_edit.setText(f"{new_val:.6f}".rstrip('0').rstrip('.'))
+        self.previous_max_unit = new_units
+
+    def parse_ra(self):
+        text = self.ra_edit.text()
+        s = text.strip()
+        if ":" in s or ' ' in s:  # sexagesimal
+            return Angle(s, unit=u.hourangle).degree
+        return float(s)
+    
+    def parse_dec(self):
+        dectext = self.dec_edit.text()
+        s = dectext.strip()
+        if ":" in s or " " in s:  # sexagesimal
+            return Angle(s, unit=u.deg).degree
+        return float(s)
+    
+    def closeEvent(self, event):
+        print("Closing application...")
+    
+        # Stop timers
+        for attr in dir(self):
+            obj = getattr(self, attr)
+            if isinstance(obj, QTimer):
+                obj.stop()
+    
+        # Close matplotlib windows
+        import matplotlib.pyplot as plt
+        plt.close('all')
+    
+        event.accept()
+
+
+
+
+    
+if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
+    
+
+    from astropy.coordinates import Angle, SkyCoord
+    import astropy.units as u
+    
+    import matplotlib
+    matplotlib.use("Qt5Agg")
+
+    import numpy as np
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    
+    from astroquery.gaia import Gaia
+    from ztfquery import lightcurve
+    from pyasassn.client import SkyPatrolClient
+    import lightkurve as lk        
+
+    from astropy.timeseries import LombScargle
+
+
+    from PyQt5.QtWidgets import QApplication
+
+    app = QApplication(sys.argv)
+    window = MyApp()
+    window.show()
+    sys.exit(app.exec_())
+
+    
+    
