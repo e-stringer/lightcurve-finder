@@ -1,5 +1,5 @@
 # lightcurve-finder
-Script with GUI that queries ZTF, Gaia, ASAS-SN, and TESS
+Script with GUI to quickly query ZTF, Gaia, ASAS-SN, and TESS to check for variability
 
 
 
