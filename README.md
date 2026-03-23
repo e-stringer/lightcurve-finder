@@ -5,12 +5,14 @@ Script with GUI to quickly query ZTF, Gaia, ASAS-SN, and TESS and check a target
 
 Installation
   * It's recommended to create a new environment with python 3.12:
+    
     (conda) -> conda create -n lightcurve-finder python=3.12
-    or
+    
     (homebrew) -> python3.12 -m venv lightcurve-finder
   * Activate your conda environment by running:
+    
     (conda) -> conda activate lightcurve-finder
-    or
+    
     (homebrew) -> source lightcurve-finder/bin/activate
   * Navigate to the folder in which you wish to install the software
   * Download the files by running:
