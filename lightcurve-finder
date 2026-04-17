@@ -19,9 +19,9 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QLabel, QComboBox, QLineEdit,
     QPushButton, QFileDialog, QMessageBox,
     QDialog, QCheckBox, QDialogButtonBox,
-    QVBoxLayout, QGridLayout, QFrame
+    QVBoxLayout, QGridLayout, QFrame,
 )
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import (Qt, QTimer)
 
 # from astropy.coordinates import Angle, SkyCoord
 # import astropy.units as u
@@ -899,6 +899,13 @@ class MyApp(QMainWindow):
             save_individual_cb.setChecked(False)
             layout.addWidget(save_individual_cb)
             
+            save_individual_cb.setEnabled(True)
+            if self.survey == 'TESS':
+                save_individual_cb.setEnabled(False)
+            
+            select_all_cb = QCheckBox("select all columns")
+            layout.addWidget(select_all_cb)
+            
             line = QFrame()
             line.setFrameShape(QFrame.HLine)
             line.setFrameShadow(QFrame.Sunken)
@@ -906,6 +913,13 @@ class MyApp(QMainWindow):
         
             # Create a checkbox for each column
             checkboxes = []
+            
+            def toggle_all(state):
+                for cb in checkboxes:
+                    cb.setChecked(state == Qt.Checked)
+
+            select_all_cb.stateChanged.connect(toggle_all)
+            
             for col in self.data.columns:
                 cb = QCheckBox(col)
                 cb.setChecked(False)  # default: all selected
@@ -930,16 +944,40 @@ class MyApp(QMainWindow):
             
                 # Ask for file path ONCE
                 options = QFileDialog.Options()
-                file_path, _ = QFileDialog.getSaveFileName(
-                    self, "Save CSV", "output.csv",
-                    "CSV Files (*.csv);;All Files (*)",
-                    options=options
-                )
+                
+                if self.survey == 'ZTF':
+                    file_path, _ = QFileDialog.getSaveFileName(
+                        self, "Save CSV", "ZTF_phot.csv",
+                        "CSV Files (*.csv);;All Files (*)",
+                        options=options
+                    )
+                
+                if self.survey == 'Gaia':
+                    file_path, _ = QFileDialog.getSaveFileName(
+                        self, "Save CSV", "Gaia_phot.csv",
+                        "CSV Files (*.csv);;All Files (*)",
+                        options=options
+                    )
+                
+                if self.survey == 'ASAS-SN':
+                    file_path, _ = QFileDialog.getSaveFileName(
+                        self, "Save CSV", "ASAS-SN_phot.csv",
+                        "CSV Files (*.csv);;All Files (*)",
+                        options=options
+                    )
+                
+                if self.survey == 'TESS':
+                    file_path, _ = QFileDialog.getSaveFileName(
+                        self, "Save CSV", "TESS_phot.csv",
+                        "CSV Files (*.csv);;All Files (*)",
+                        options=options
+                    )
             
                 if file_path:
                     base, ext = os.path.splitext(file_path)
             
                     # --- Decide what to save ---
+                    datasets = [(None, self.data)]
                     if self.survey == 'ZTF':
                         if save_individual_cb.isChecked() and 'filtercode' in self.data.columns:
                             grouped = self.data.groupby('filtercode')
