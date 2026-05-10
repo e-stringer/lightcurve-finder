@@ -16,7 +16,7 @@ Installation
     (homebrew) -> source lightcurve-finder/bin/activate
   * Navigate to the folder in which you wish to install the software
   * Download the files by running:
-    -> git clone git@github.com:e-stringer/lightcurve-finder.git
+    -> git clone https://github.com/e-stringer/lightcurve-finder.git
   * Navigate into the folder titled "lightcurve-finder"
   * Install the dependencies with:
     -> pip install -e .
