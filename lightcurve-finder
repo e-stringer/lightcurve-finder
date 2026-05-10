@@ -14,6 +14,7 @@ class SuppressOutput:
     def __exit__(self, exc_type, exc_val, exc_tb):
         sys.stdout.close()
         sys.stdout = self._stdout
+        
 
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QLabel, QComboBox, QLineEdit,
@@ -429,7 +430,11 @@ class MyApp(QMainWindow):
                 if self.survey in ['ZTF']:
                     filtercode = f"z{self.band}"
                     mask = self.data['filtercode'] == filtercode
+                    
                     t = self.data['mjd'][mask]
+                    observatory_location = 'Palomar'
+                    t = self.MJD2BJD(t,self.parse_ra(),self.parse_dec(),observatory_location)
+                    
                     y = self.data['mag'][mask]
                     self.yerr = self.data['magerr'][mask]
                     valid = (~np.isnan(t)) & (~np.isnan(y)) & (~np.isnan(self.yerr))
@@ -482,6 +487,10 @@ class MyApp(QMainWindow):
                     
                     t = self.data['jd'][mask]
                     t = t - 2400000.5
+                    
+                    observatory_location = 'Cerro Tololo Interamerican Observatory'
+                    t = self.MJD2BJD(t,self.parse_ra(),self.parse_dec(),observatory_location)
+                    
                     y = self.data['mag'][mask]
                     self.yerr = self.data['mag_err'][mask]
                     valid = (~np.isnan(t)) & (~np.isnan(y)) & (~np.isnan(self.yerr))
@@ -1149,6 +1158,18 @@ class MyApp(QMainWindow):
         plt.close('all')
     
         event.accept()
+        
+    def MJD2BJD(self,mjd,ra,dec,observatory,verbose=False):
+        # coord = SkyCoord(ra=ra, dec=dec, unit=(u.degree, u.degree))
+        target = coord.SkyCoord(ra,dec,unit=(u.deg, u.deg), frame='icrs')
+        observatory = coord.EarthLocation.of_site(observatory)
+            
+        
+        times = time.Time(mjd, format='mjd', scale='utc', location=observatory)
+            
+        ltt_bary = times.light_travel_time(target)
+        time_barycentre = times.tdb + ltt_bary
+        return time_barycentre.jd
 
 
 
@@ -1159,8 +1180,10 @@ if __name__ == "__main__":
     multiprocessing.freeze_support()
     
 
-    from astropy.coordinates import Angle, SkyCoord
+    from astropy.coordinates import Angle, SkyCoord, EarthLocation
+    from astropy import coordinates as coord
     import astropy.units as u
+    from astropy import time as time
     
     import matplotlib
     matplotlib.use("Qt5Agg")
