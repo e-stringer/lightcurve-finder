@@ -18,7 +18,7 @@ Installation
   * Download the files by running:
     -> git clone https://github.com/e-stringer/lightcurve-finder.git
   * Navigate into the folder titled "lightcurve-finder"
-  * Install the dependencies with:
+  * Install the dependencies with (ONLY DO THIS IN YOUR LIGHTCURVE-FINDER ENVIRONMENT!) :
     -> pip install -e .
 
 Usage:
