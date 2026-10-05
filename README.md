@@ -1,4 +1,4 @@
-<img width="497" height="243" alt="lightcurve-finder" src="https://github.com/user-attachments/assets/c3485274-4a27-452b-9186-b48c78d66a25" />
+
 
 # lightcurve-finder
 Script with GUI to quickly query ZTF, Gaia, ASAS-SN, and TESS and check a target for variability.
@@ -26,6 +26,8 @@ Installation
 Usage:
   * The software can be run by typing:
     -> lightcurve-finder
+
+<img width="497" height="243" alt="lightcurve-finder" src="https://github.com/user-attachments/assets/c3485274-4a27-452b-9186-b48c78d66a25" />
 
 Functions:
   * Survey: A dropdown menu to select the survey you'd like to query. Note: you will need a free IRSA account to query ZTF. The credentials     are only requested the first time you query. You can make an account by following the link below:
